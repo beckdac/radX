@@ -18,6 +18,12 @@ Adafruit_SSD1306 *oled;
 
 // MCP23017
 Adafruit_MCP23017 mcp0; //, mcp1;
+#define MCP0_INTERRUPT_PIN 1
+volatile bool mcp0_interrupt = false;
+void mcp0_interrupt_callback(void) {
+	mcp0_interrupt = true;
+	Serial.println("interrupt");
+}
 
 // si3531
 Si5351 si5351;
@@ -55,7 +61,7 @@ typedef struct encoder {
 } encoder_t;
 
 // called when the frequency tuning encoder changes value
-bool encoder_freq_callback(encoder_t *encoder, int8_t dir) {
+bool encoder_freq_callback(struct encoder *encoder, int8_t dir) {
 	if (freq_hold)
 		return true;
 	uint32_t delta = pow(10, freq_digit);
@@ -83,7 +89,7 @@ bool encoder_freq_callback(encoder_t *encoder, int8_t dir) {
 	return true;
 }
 
-bool encoder_select_callback(encoder_t *encoder, int8_t dir) {
+bool encoder_select_callback(struct encoder *encoder, int8_t dir) {
 	if (dir > 0) {	// +
 		if (freq_digit < 9)
 			freq_digit++;
@@ -98,7 +104,7 @@ bool encoder_select_callback(encoder_t *encoder, int8_t dir) {
 	oled_update_display();
 }
 
-bool encoder_freq_sw_callback(encoder_t *encoder) {
+bool encoder_freq_sw_callback(struct encoder *encoder) {
 	if (encoder->sw) {
 		switch (current_clk) {
 			case clk0:
@@ -121,7 +127,7 @@ bool encoder_freq_sw_callback(encoder_t *encoder) {
 	}
 }
 
-bool encoder_select_sw_callback(encoder_t *encoder) {
+bool encoder_select_sw_callback(struct encoder *encoder) {
 	if (encoder->sw) {
 		freq_hold = !freq_hold;
 		oled_update_display();
@@ -195,6 +201,18 @@ void setup() {
 	// switches
 	switches_init();
 
+	// tie together the encoders/switches with mcp interrupts
+	pinMode(MCP0_INTERRUPT_PIN, INPUT);
+	mcp0.setupInterrupts(true, false, LOW);
+	for (int i = 0; i < ENCODERS; ++i) {
+		encoders[i].mcpX->setupInterruptPin(encoders[i].pinA, CHANGE);
+		encoders[i].mcpX->setupInterruptPin(encoders[i].pinB, CHANGE);
+		encoders[i].mcpX->setupInterruptPin(encoders[i].pinSW, CHANGE);
+	}
+	for (int i = 0; i < SWITCHES; ++i) {
+		switches[i].mcpX->setupInterruptPin(switches[i].pin, CHANGE);
+	}
+
 	// si5351
 	si5351_init();
 
@@ -211,12 +229,23 @@ int i;
 
 void loop() {
 #ifdef DEBUG
-	//Serial.print("loop\n\r");
-	//delay(100);
+	Serial.print("loop\n\r");
 #endif
-	gpioAB[0] = mcp0.readGPIOAB();
-	encoders_process();
-	switches_process();
+	attachInterrupt(MCP0_INTERRUPT_PIN, &mcp0_interrupt_callback, FALLING);
+
+	while (!mcp0_interrupt);
+#ifdef DEBUG
+	Serial.print("interrupt\n\r");
+#endif
+
+	detachInterrupt(MCP0_INTERRUPT_PIN);
+
+	if (mcp0_interrupt) {
+		gpioAB[0] = mcp0.readGPIOAB();
+		encoders_process();
+		switches_process();
+		mcp0_interrupt = false;
+	}
 }
 
 /******************************************************************************
