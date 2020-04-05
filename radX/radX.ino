@@ -33,16 +33,19 @@ typedef struct encoder {
 	int16_t min_value;		// min value encoder can have
 	int16_t max_value;		// max value encoder can have
 	bool (*encoder_callback)(struct encoder *encoder, int8_t dir);
+	bool (*encoder_sw_callback)(struct encoder *encoder);
 } encoder_t;
 
 
 unsigned long long clk0_freq = 1400000000ULL;
 uint8_t freq_digit = 0;
+bool freq_hold = false;
 
 bool encoder_freq_callback(encoder_t *encoder, int8_t dir) {
+	if (freq_hold)
+		return true;
 	if (dir > 0) {	// +
 		clk0_freq += pow(10, freq_digit) * 100;
-	} else if (dir == 0) { // switch
 	} else {	// -
 		unsigned long delta = pow(10, freq_digit) * 100;
 		if ((signed long long)clk0_freq - delta < 0)
@@ -50,24 +53,24 @@ bool encoder_freq_callback(encoder_t *encoder, int8_t dir) {
 		else
 			clk0_freq -= delta;
 	}
-#ifdef DEBUG
-	Serial.print("frequency: ");
-	Serial.println((unsigned long)(clk0_freq / 100), DEC);
-#endif
 	if (clk0_freq > 20000000000ULL)
 		clk0_freq = 20000000000ULL;
 	si5351.set_freq(clk0_freq, SI5351_CLK0);
 #ifdef DEBUG
+	Serial.print("frequency: ");
+	Serial.println((unsigned long)(clk0_freq / 100), DEC);
+#endif
+#ifdef DEBUG
 	//si5351_status();
 #endif
 	oled_update_display();
+	return true;
 }
 
 bool encoder_select_callback(encoder_t *encoder, int8_t dir) {
 	if (dir > 0) {	// +
 		if (freq_digit < 9)
 			freq_digit++;
-	} else if (dir == 0) { // switch
 	} else {	// -
 		if (freq_digit > 0)
 			freq_digit--;
@@ -79,11 +82,23 @@ bool encoder_select_callback(encoder_t *encoder, int8_t dir) {
 	oled_update_display();
 }
 
+bool encoder_freq_sw_callback(encoder_t *encoder) {
+	
+}
+
+bool encoder_select_sw_callback(encoder_t *encoder) {
+	if (encoder->sw) {
+		freq_hold = !freq_hold;
+		oled_update_display();
+		Serial.println(freq_hold, DEC);
+	}
+}
+
 #define ENCODERS 2
 // setup the encoder data structures
 encoder_t encoders[ENCODERS] = {
-	{ &mcp0, 0, 1, 2,    true, true, false, 63, 0, 127, &encoder_freq_callback },
-	{ &mcp0, 3, 4, 5,    true, true, false, 63, 0, 127, &encoder_select_callback },
+	{ &mcp0, 0, 1, 2,    true, true, false, 63, 0, 127, &encoder_freq_callback, &encoder_freq_sw_callback },
+	{ &mcp0, 3, 4, 5,    true, true, false, 63, 0, 127, &encoder_select_callback, &encoder_select_sw_callback },
 /*
 	{ &mcp0, 8, 9, 10,   true, true, false, 63, 0, 127, 72 },
 	{ &mcp0, 11, 12, 13, true, true, false, 63, 0, 127, 73 },
@@ -194,33 +209,26 @@ void oled_init(void) {
 #endif
 }
 
-int ch = 0;
 void oled_update_display(void) {
-#if 1
+	char buf[12];
 	oled->clearDisplay();
 	oled->setTextSize(2);
-	oled->setTextColor(WHITE);
+	// current frequency
+	oled->setTextColor(SSD1306_WHITE);
 	oled->setCursor(0, 0);
-	char buf[12];
+	if (freq_hold) {
+		Serial.print(freq_hold, DEC);
+		oled->setTextColor(SSD1306_BLACK, SSD1306_WHITE);
+	}
 	snprintf(buf, 12, "%10lu", (unsigned long)(clk0_freq / 100));
 	oled->print(buf);
+	if (freq_hold)
+		oled->setTextColor(SSD1306_WHITE);
+	// current digit cursor
+	oled->setTextColor(SSD1306_WHITE);
 	oled->setCursor(12*9 - freq_digit * 12, 20);
 	oled->print((char)222);
 	oled->display();
-#else
-	  oled->clearDisplay();
-  oled->setTextSize(2);
-  oled->setTextColor(WHITE);
-  oled->setCursor(0,0);
-  oled->print(ch, DEC);
-  oled->setCursor(40,0);
-  oled->print((char)ch);
-  oled->display();
-  ch++;
-  if (ch > 254)
-  	ch = 0;
-
-#endif
 }
 
 /******************************************************************************
@@ -277,6 +285,7 @@ void encoders_process(void) {
 			Serial.print(i, DEC);
 			Serial.print(" switch state change: ");
 			Serial.println(sw, DEC);
+			encoders[i].encoder_sw_callback(&encoders[i]);
 #endif
 		}
 		// the encoder has changed state
