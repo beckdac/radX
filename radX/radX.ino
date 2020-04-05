@@ -4,27 +4,45 @@
 #include <si5351.h>
 #include <Wire.h>
 
-// Comment from previous version - this has not been tested with current sketch
-// NOTE: dacb has edited the Adafruit library to include a call to 
-// Wire.setClock after Wire.begin to increase the i2c clock to 1.7M
-// which is an allowed rate in the MCP23017 datasheet
-
 #undef DEBUG
 #define DEBUG
 
-// OLED setup
+// i2c parameters
+#define I2C_FREQ 400000
+
+// OLED
 #define OLED_WIDTH  128
 #define OLED_HEIGHT  64
 #define OLED_RESET -1
 Adafruit_SSD1306 *oled;
 
-// MCP23017 setup
+// MCP23017
 Adafruit_MCP23017 mcp0; //, mcp1;
 
 // si3531
 Si5351 si5351;
 
+typedef struct si_clock {
+	uint32_t freq;
+	uint32_t freq_max;
+} si_clock_t;
+
+#define SI_CLOCKS 3
+#define FREQ_MAX 200000000
+#define FREQ_DEFAULT 14000000
+// setup the clock data structures
+si_clock_t si_clocks[SI_CLOCKS] = {
+	{ FREQ_DEFAULT, FREQ_MAX },	// clk0
+	{ 0, FREQ_MAX },	// clk1
+	{ 0, FREQ_MAX }		// clk2
+};
+enum Si_clock { clk0 = 0, clk1 = 1, clk2 = 2 };
+
 // encoders and switches
+Si_clock current_clk = clk0;
+uint8_t freq_digit = 0;		// what digit is being manipulated by the tuning encoder
+bool freq_hold = false;		// is the tuning encoder locked out of frequency changes
+
 typedef struct encoder {
 	Adafruit_MCP23017 *mcpX;	// which mcp chip is this encoder on
 	uint8_t pinA, pinB, pinSW;	// which pins are A, B, and SW
@@ -36,32 +54,30 @@ typedef struct encoder {
 	bool (*encoder_sw_callback)(struct encoder *encoder);
 } encoder_t;
 
-
-unsigned long long clk0_freq = 1400000000ULL;
-uint8_t freq_digit = 0;
-bool freq_hold = false;
-
+// called when the frequency tuning encoder changes value
 bool encoder_freq_callback(encoder_t *encoder, int8_t dir) {
 	if (freq_hold)
 		return true;
+	uint32_t delta = pow(10, freq_digit);
 	if (dir > 0) {	// +
-		clk0_freq += pow(10, freq_digit) * 100;
-	} else {	// -
-		unsigned long delta = pow(10, freq_digit) * 100;
-		if ((signed long long)clk0_freq - delta < 0)
-			clk0_freq = 0;
+		if (si_clocks[current_clk].freq + delta > si_clocks[current_clk].freq_max)
+			si_clocks[current_clk].freq = si_clocks[current_clk].freq_max;
 		else
-			clk0_freq -= delta;
+			si_clocks[current_clk].freq += pow(10, freq_digit);
+	} else {	// -
+		if (si_clocks[current_clk].freq - delta < 0)
+			si_clocks[current_clk].freq = 0;
+		else
+			si_clocks[current_clk].freq -= delta;
 	}
-	if (clk0_freq > 20000000000ULL)
-		clk0_freq = 20000000000ULL;
-	si5351.set_freq(clk0_freq, SI5351_CLK0);
+	if (current_clk == clk0)
+		si5351.set_freq(si_clocks[current_clk].freq * SI5351_FREQ_MULT, SI5351_CLK0);
+	// si5351.set_freq(si_clocks[current_clk].freq * SI5351_FREQ_MULT, (current_clk == clk0 ? SI5351_CLK0 : (current_clk == clk1 ? SI5351_CLK1 : SI5351_CLK2)));
 #ifdef DEBUG
-	Serial.print("frequency: ");
-	Serial.println((unsigned long)(clk0_freq / 100), DEC);
-#endif
-#ifdef DEBUG
-	//si5351_status();
+	Serial.print("clock ");
+	Serial.print(current_clk, DEC);
+	Serial.print(" frequency: ");
+	Serial.println(si_clocks[current_clk].freq, DEC);
 #endif
 	oled_update_display();
 	return true;
@@ -83,14 +99,36 @@ bool encoder_select_callback(encoder_t *encoder, int8_t dir) {
 }
 
 bool encoder_freq_sw_callback(encoder_t *encoder) {
-	
+	if (encoder->sw) {
+		switch (current_clk) {
+			case clk0:
+				current_clk = clk1;
+				break;
+			case clk1:
+				current_clk = clk2;
+				break;
+			case clk2:
+				current_clk = clk0;
+				break;
+			default:
+				current_clk = clk0;
+		};
+#ifdef DEBUG
+		Serial.print("current clock changed to ");
+		Serial.println(current_clk, DEC);
+#endif
+		oled_update_display();
+	}
 }
 
 bool encoder_select_sw_callback(encoder_t *encoder) {
 	if (encoder->sw) {
 		freq_hold = !freq_hold;
 		oled_update_display();
+#ifdef DEBUG
+		Serial.print("freq_hold = ");
 		Serial.println(freq_hold, DEC);
+#endif
 	}
 }
 
@@ -186,7 +224,7 @@ void loop() {
  *****************************************************************************/
 void i2c_init(void) {
 	Wire.begin();
-	Wire.setClock(400000);
+	Wire.setClock(I2C_FREQ);
 #ifdef DEBUG
 	Serial.println("i2c");
 #endif
@@ -220,7 +258,7 @@ void oled_update_display(void) {
 		Serial.print(freq_hold, DEC);
 		oled->setTextColor(SSD1306_BLACK, SSD1306_WHITE);
 	}
-	snprintf(buf, 12, "%10lu", (unsigned long)(clk0_freq / 100));
+	snprintf(buf, 12, "%10lu", (unsigned long)si_clocks[current_clk].freq);
 	oled->print(buf);
 	if (freq_hold)
 		oled->setTextColor(SSD1306_WHITE);
@@ -228,6 +266,11 @@ void oled_update_display(void) {
 	oled->setTextColor(SSD1306_WHITE);
 	oled->setCursor(12*9 - freq_digit * 12, 20);
 	oled->print((char)222);
+	// current selected clock
+	oled->setTextColor(SSD1306_WHITE);
+	oled->setCursor(0, 30);
+	oled->setTextSize(1);
+	oled->print((current_clk == clk0 ? "clock 0" : (current_clk == clk1 ? "clock 1" : "clock 2")));
 	oled->display();
 }
 
@@ -378,8 +421,10 @@ void si5351_init() {
 		return;
 #endif
     	}
-	// Set CLK0 to output 14 MHz
-	si5351.set_freq(clk0_freq, SI5351_CLK0);
+	// Set clocks to default
+	si5351.set_freq(si_clocks[clk0].freq, SI5351_CLK0);
+	//si5351.set_freq(si_clocks[clk1].freq, SI5351_CLK1);
+	//si5351.set_freq(si_clocks[clk2].freq, SI5351_CLK2);
 #ifdef DEBUG
 	Serial.println("si5351");
 #endif
