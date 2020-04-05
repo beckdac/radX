@@ -54,8 +54,8 @@ bool encoder_freq_callback(encoder_t *encoder, int8_t dir) {
 	Serial.print("frequency: ");
 	Serial.println((unsigned long)(clk0_freq / 100), DEC);
 #endif
-	if (clk0_freq > 2000000000ULL)
-		clk0_freq = 2000000000ULL;
+	if (clk0_freq > 20000000000ULL)
+		clk0_freq = 20000000000ULL;
 	si5351.set_freq(clk0_freq, SI5351_CLK0);
 #ifdef DEBUG
 	//si5351_status();
@@ -76,6 +76,7 @@ bool encoder_select_callback(encoder_t *encoder, int8_t dir) {
 	Serial.print("freq_digit: ");
 	Serial.println(freq_digit, DEC);
 #endif
+	oled_update_display();
 }
 
 #define ENCODERS 2
@@ -193,13 +194,33 @@ void oled_init(void) {
 #endif
 }
 
+int ch = 0;
 void oled_update_display(void) {
+#if 1
 	oled->clearDisplay();
 	oled->setTextSize(2);
 	oled->setTextColor(WHITE);
 	oled->setCursor(0, 0);
-	oled->println((unsigned long)(clk0_freq / 100), DEC);
+	char buf[12];
+	snprintf(buf, 12, "%10lu", (unsigned long)(clk0_freq / 100));
+	oled->print(buf);
+	oled->setCursor(12*9 - freq_digit * 12, 20);
+	oled->print((char)222);
 	oled->display();
+#else
+	  oled->clearDisplay();
+  oled->setTextSize(2);
+  oled->setTextColor(WHITE);
+  oled->setCursor(0,0);
+  oled->print(ch, DEC);
+  oled->setCursor(40,0);
+  oled->print((char)ch);
+  oled->display();
+  ch++;
+  if (ch > 254)
+  	ch = 0;
+
+#endif
 }
 
 /******************************************************************************
