@@ -41,19 +41,26 @@ uint8_t freq_digit = 0;
 
 bool encoder_freq_callback(encoder_t *encoder, int8_t dir) {
 	if (dir > 0) {	// +
-		clk0_freq += pow(10, freq_digit) * 1;
+		clk0_freq += pow(10, freq_digit) * 100;
 	} else if (dir == 0) { // switch
 	} else {	// -
-		clk0_freq += pow(10, freq_digit) * -1;
+		unsigned long delta = pow(10, freq_digit) * 100;
+		if ((signed long long)clk0_freq - delta < 0)
+			clk0_freq = 0;
+		else
+			clk0_freq -= delta;
 	}
 #ifdef DEBUG
 	Serial.print("frequency: ");
 	Serial.println((unsigned long)(clk0_freq / 100), DEC);
 #endif
+	if (clk0_freq > 2000000000ULL)
+		clk0_freq = 2000000000ULL;
 	si5351.set_freq(clk0_freq, SI5351_CLK0);
 #ifdef DEBUG
-	si5351_status();
+	//si5351_status();
 #endif
+	oled_update_display();
 }
 
 bool encoder_select_callback(encoder_t *encoder, int8_t dir) {
@@ -117,7 +124,7 @@ switch_t switches[SWITCHES] = {
 
 void setup() {
 #ifdef DEBUG
-	delay(5000);
+	delay(1000);
 	Serial.begin(115200);
 	Serial.println("setup...");
 #endif
@@ -140,6 +147,7 @@ void setup() {
 #ifdef DEBUG
 	Serial.println("...done");
 #endif
+	oled_update_display();
 }
 
 uint8_t gpioAB[2];
@@ -183,6 +191,15 @@ void oled_init(void) {
 #ifdef DEBUG
 	Serial.println("oled");
 #endif
+}
+
+void oled_update_display(void) {
+	oled->clearDisplay();
+	oled->setTextSize(2);
+	oled->setTextColor(WHITE);
+	oled->setCursor(0, 0);
+	oled->println((unsigned long)(clk0_freq / 100), DEC);
+	oled->display();
 }
 
 /******************************************************************************
