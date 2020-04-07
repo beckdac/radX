@@ -451,7 +451,7 @@ void si5351_init() {
 #endif
     	}
 	// Set clocks to default
-	si5351.set_freq(si_clocks[clk0].freq, SI5351_CLK0);
+	si5351.set_freq(si_clocks[0].freq * 100ULL, SI5351_CLK0);
 	//si5351.set_freq(si_clocks[clk1].freq, SI5351_CLK1);
 	//si5351.set_freq(si_clocks[clk2].freq, SI5351_CLK2);
 #ifdef DEBUG
