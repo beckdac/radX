@@ -79,21 +79,21 @@ typedef struct encoder {
 bool encoder_freq_callback(struct encoder *encoder, int8_t dir) {
 	if (freq_hold)
 		return true;
-	uint32_t delta = pow(10, freq_digit);
+	uint64_t delta = pow(10, freq_digit) * SI5351_FREQ_MULT;
 	if (dir > 0) {	// +
-		si_clocks[current_clk].freq += pow(10, freq_digit) * SI5351_FREQ_MULT;
+		si_clocks[current_clk].freq += delta;
 	} else {	// -
-		si_clocks[current_clk].freq -= delta * SI5351_FREQ_MULT;
+		si_clocks[current_clk].freq -= delta;
 	}
-	if (current_clk == SI5351_CLK0)
-		si5351.set_freq(si_clocks[current_clk].freq * SI5351_FREQ_MULT, SI5351_CLK0);
-	// si5351.set_freq(si_clocks[current_clk].freq * SI5351_FREQ_MULT, (current_clk == clk0 ? SI5351_CLK0 : (current_clk == clk1 ? SI5351_CLK1 : SI5351_CLK2)));
 #ifdef DEBUG
+	Serial.print("delta ");
+	Serial.print((uint32_t) delta, DEC);
 	Serial.print("clock ");
 	Serial.print(current_clk, DEC);
 	Serial.print(" frequency: ");
 	Serial.println((uint32_t)(si_clocks[current_clk].freq / SI5351_FREQ_MULT), DEC);
 #endif
+	si5351_set_freq(si_clocks[current_clk].clock, si_clocks[current_clk].freq);
 	oled_update_display();
 	return true;
 }
