@@ -28,24 +28,38 @@ void mcp0_interrupt_callback(void) {
 // si3531
 Si5351 si5351;
 
+#define PLL_MIN 60000000000ULL
+#define PLL_MAX 90000000000ULL
+
+typedef struct si_plls {
+	si5351_pll pll;
+	uint64_t pll_freq;
+	uint64_t freq;
+	int n;
+} si_plls_t;
+
+#define SI_PLLS 2
+si_plls_t si_plls[SI_PLLS] = {
+	{ SI5351_PLLA, PLL_MIN, 0 }
+};
+
 typedef struct si_clock {
-	uint32_t freq;
-	uint32_t freq_max;
+	enum si5351_clock clock;
+	uint64_t freq;
+	enum si5351_pll pll;
+	enum si5351_drive drive_strength;
 } si_clock_t;
 
 #define SI_CLOCKS 3
-#define FREQ_MAX 200000000
-#define FREQ_DEFAULT 14000000
 // setup the clock data structures
 si_clock_t si_clocks[SI_CLOCKS] = {
-	{ FREQ_DEFAULT, FREQ_MAX },	// clk0
-	{ 0, FREQ_MAX },	// clk1
-	{ 0, FREQ_MAX }		// clk2
+	{ SI5351_CLK0, 1400000000ULL, SI5351_PLLA, SI5351_DRIVE_2MA },	// clk0
+	{ SI5351_CLK1, 1400000000ULL, SI5351_PLLA, SI5351_DRIVE_2MA },	// clk1
+	{ SI5351_CLK2, 3000000000ULL, SI5351_PLLB, SI5351_DRIVE_2MA }	// clk2
 };
-enum Si_clock { clk0 = 0, clk1 = 1, clk2 = 2 };
 
 // encoders and switches
-Si_clock current_clk = clk0;
+si5351_clock current_clk = SI5351_CLK0;
 uint8_t freq_digit = 0;		// what digit is being manipulated by the tuning encoder
 bool freq_hold = false;		// is the tuning encoder locked out of frequency changes
 
@@ -66,24 +80,18 @@ bool encoder_freq_callback(struct encoder *encoder, int8_t dir) {
 		return true;
 	uint32_t delta = pow(10, freq_digit);
 	if (dir > 0) {	// +
-		if (si_clocks[current_clk].freq + delta > si_clocks[current_clk].freq_max)
-			si_clocks[current_clk].freq = si_clocks[current_clk].freq_max;
-		else
-			si_clocks[current_clk].freq += pow(10, freq_digit);
+		si_clocks[current_clk].freq += pow(10, freq_digit) * SI5351_FREQ_MULT;
 	} else {	// -
-		if (si_clocks[current_clk].freq - delta < 0)
-			si_clocks[current_clk].freq = 0;
-		else
-			si_clocks[current_clk].freq -= delta;
+		si_clocks[current_clk].freq -= delta * SI5351_FREQ_MULT;
 	}
-	if (current_clk == clk0)
+	if (current_clk == SI5351_CLK0)
 		si5351.set_freq(si_clocks[current_clk].freq * SI5351_FREQ_MULT, SI5351_CLK0);
 	// si5351.set_freq(si_clocks[current_clk].freq * SI5351_FREQ_MULT, (current_clk == clk0 ? SI5351_CLK0 : (current_clk == clk1 ? SI5351_CLK1 : SI5351_CLK2)));
 #ifdef DEBUG
 	Serial.print("clock ");
 	Serial.print(current_clk, DEC);
 	Serial.print(" frequency: ");
-	Serial.println(si_clocks[current_clk].freq, DEC);
+	Serial.println((uint32_t)(si_clocks[current_clk].freq / SI5351_FREQ_MULT), DEC);
 #endif
 	oled_update_display();
 	return true;
@@ -107,17 +115,18 @@ bool encoder_select_callback(struct encoder *encoder, int8_t dir) {
 bool encoder_freq_sw_callback(struct encoder *encoder) {
 	if (encoder->sw) {
 		switch (current_clk) {
-			case clk0:
-				current_clk = clk1;
+			case SI5351_CLK0:
+				current_clk = SI5351_CLK1;
+				freq_hold = true;
 				break;
-			case clk1:
-				current_clk = clk2;
+			case SI5351_CLK1:
+				current_clk = SI5351_CLK2;
 				break;
-			case clk2:
-				current_clk = clk0;
+			case SI5351_CLK2:
+				current_clk = SI5351_CLK0;
 				break;
 			default:
-				current_clk = clk0;
+				current_clk = SI5351_CLK0;
 		};
 #ifdef DEBUG
 		Serial.print("current clock changed to ");
@@ -129,8 +138,11 @@ bool encoder_freq_sw_callback(struct encoder *encoder) {
 
 bool encoder_select_sw_callback(struct encoder *encoder) {
 	if (encoder->sw) {
-		freq_hold = !freq_hold;
-		oled_update_display();
+		// clock 1 is quad locked to clock 0
+		if (current_clk != SI5351_CLK1) {
+			freq_hold = !freq_hold;
+			oled_update_display();
+		}
 #ifdef DEBUG
 		Serial.print("freq_hold = ");
 		Serial.println(freq_hold, DEC);
@@ -141,13 +153,13 @@ bool encoder_select_sw_callback(struct encoder *encoder) {
 #define ENCODERS 2
 // setup the encoder data structures
 encoder_t encoders[ENCODERS] = {
-	{ &mcp0, 0, 1, 2,    true, true, false, 63, 0, 127, &encoder_freq_callback, &encoder_freq_sw_callback },
-	{ &mcp0, 3, 4, 5,    true, true, false, 63, 0, 127, &encoder_select_callback, &encoder_select_sw_callback },
+	{ &mcp0, 0, 1, 2,	true, true, false, 63, 0, 127, &encoder_freq_callback, &encoder_freq_sw_callback },
+	{ &mcp0, 3, 4, 5,	true, true, false, 63, 0, 127, &encoder_select_callback, &encoder_select_sw_callback },
 /*
 	{ &mcp0, 8, 9, 10,   true, true, false, 63, 0, 127, 72 },
 	{ &mcp0, 11, 12, 13, true, true, false, 63, 0, 127, 73 },
-	{ &mcp1, 0, 1, 2,    true, true, false, 63, 0, 127, 74 },
-	{ &mcp1, 3, 4, 5,    true, true, false, 63, 0, 127, 75 },
+	{ &mcp1, 0, 1, 2,	true, true, false, 63, 0, 127, 74 },
+	{ &mcp1, 3, 4, 5,	true, true, false, 63, 0, 127, 75 },
 	{ &mcp1, 8, 9, 10,   true, true, false, 63, 0, 127, 76 },
 	{ &mcp1, 11, 12, 13, true, true, false, 63, 0, 127, 77 }
 */
@@ -287,7 +299,7 @@ void oled_update_display(void) {
 		Serial.print(freq_hold, DEC);
 		oled->setTextColor(SSD1306_BLACK, SSD1306_WHITE);
 	}
-	snprintf(buf, 12, "%10lu", (unsigned long)si_clocks[current_clk].freq);
+	snprintf(buf, 12, "%10lu", (unsigned long)(si_clocks[current_clk].freq / 100ULL));
 	oled->print(buf);
 	if (freq_hold)
 		oled->setTextColor(SSD1306_WHITE);
@@ -299,7 +311,7 @@ void oled_update_display(void) {
 	oled->setTextColor(SSD1306_WHITE);
 	oled->setCursor(0, 30);
 	oled->setTextSize(1);
-	oled->print((current_clk == clk0 ? "clock 0" : (current_clk == clk1 ? "clock 1" : "clock 2")));
+	oled->print((current_clk == SI5351_CLK0 ? "clock 0" : (current_clk == SI5351_CLK1 ? "clock 1" : "clock 2")));
 	oled->display();
 }
 
@@ -307,14 +319,14 @@ void oled_update_display(void) {
  * Graphics visuals
  *****************************************************************************/
 void gfx_bar_graph(uint8_t base_x, uint8_t base_y, uint8_t width, 
-                    uint8_t height, uint8_t value) {
-    uint8_t x0, y0, fill_height;
-    if (value > height)
-        value = height;
-    x0 = base_x;
-    y0 = base_y - height;
-    fill_height = value;
-    oled->fillRect(x0, y0, width, fill_height, 1);
+					uint8_t height, uint8_t value) {
+	uint8_t x0, y0, fill_height;
+	if (value > height)
+		value = height;
+	x0 = base_x;
+	y0 = base_y - height;
+	fill_height = value;
+	oled->fillRect(x0, y0, width, fill_height, 1);
 }
 
 /******************************************************************************
@@ -440,6 +452,23 @@ void switches_process(void) {
 	}
 }
 
+void si5351_pll_freq_calculate(uint8_t pll) {
+	double pll_freq_dbl;
+
+	for (uint8_t i = 10; i <= 200; i = i + 2) {
+		pll_freq_dbl = si_plls[pll].freq * i;
+		if (pll_freq_dbl >= PLL_MIN) {
+			if (pll_freq_dbl <= PLL_MAX) {
+				if (pll_freq_dbl == floor(pll_freq_dbl)) {
+					si_plls[pll].pll_freq = pll_freq_dbl;
+					si_plls[pll].n = si_plls[pll].pll_freq / si_plls[pll].freq;
+					break;
+				}
+			}
+		}
+	} 
+}
+
 void si5351_init() {
 	bool i2c_found;
 
@@ -449,15 +478,46 @@ void si5351_init() {
 		Serial.println("si5351 not found on I2C bus!");
 		return;
 #endif
-    	}
+	}
 	// Set clocks to default
-	si5351.set_freq(si_clocks[0].freq * 100ULL, SI5351_CLK0);
-	//si5351.set_freq(si_clocks[clk1].freq, SI5351_CLK1);
-	//si5351.set_freq(si_clocks[clk2].freq, SI5351_CLK2);
+	for (i = 0; i < SI_CLOCKS; ++i) {
+		si5351_set_freq(i, si_clocks[i].freq);
+	}
 #ifdef DEBUG
 	Serial.println("si5351");
 #endif
 }	
+
+void si5351_set_freq(uint8_t clock, uint64_t freq) {
+	uint8_t pll;
+	// don't change the frequency if the clock is on hold
+	// or this is clock 1 which is locked as quad of clk0
+	if (freq_hold || si_clocks[clock].clock == SI5351_CLK1)
+		return;
+	for (pll = 0; pll < SI_PLLS; ++pll) {
+		if (si_plls[pll].pll == si_clocks[clock].pll)
+			break;
+	}
+#ifdef DEBUG
+	if (pll == SI_PLLS) {	// this shouldn't happen
+		Serial.println("reached prohibited state in si5351_set_freq");
+		return;
+	}
+#endif
+	// get the pll setup for the new frequency
+	si_plls[pll].freq = freq;
+	si5351_pll_freq_calculate(pll);
+	si5351.set_pll(si_plls[pll].pll_freq, si_plls[pll].pll);
+
+	si_clocks[clock].freq = freq;
+	si5351.set_freq_manual(si_clocks[clock].freq, si_plls[pll].pll_freq, si_clocks[clock].clock);
+	if (si_clocks[clock].clock == SI5351_CLK0) {
+		si5351.set_freq_manual(si_clocks[clock].freq, si_plls[pll].pll_freq, SI5351_CLK1);
+		si5351.set_phase(SI5351_CLK0, 0);
+		si5351.set_phase(SI5351_CLK1, si_plls[pll].n);
+	}
+	si5351.pll_reset(si_plls[pll].pll);
+}
 
 void si5351_status() {
 	si5351.update_status();
