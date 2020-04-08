@@ -36,11 +36,13 @@ typedef struct si_plls {
 	uint64_t pll_freq;
 	uint64_t freq;
 	int n;
+	int last_n;
 } si_plls_t;
 
 #define SI_PLLS 2
 si_plls_t si_plls[SI_PLLS] = {
-	{ SI5351_PLLA, PLL_MIN, 0 }
+	{ SI5351_PLLA, PLL_MIN, 0, -1 },
+	{ SI5351_PLLB, PLL_MIN, 0, -1 }
 };
 
 typedef struct si_clock {
@@ -458,6 +460,7 @@ void switches_process(void) {
 void si5351_pll_freq_calculate(uint8_t pll) {
 	double pll_freq_dbl;
 
+	si_plls[pll].last_n = si_plls[pll].n;
 	for (uint8_t i = 10; i <= 200; i = i + 2) {
 		pll_freq_dbl = si_plls[pll].freq * i;
 		if (pll_freq_dbl >= PLL_MIN) {
@@ -519,7 +522,8 @@ void si5351_set_freq(uint8_t clock, uint64_t freq) {
 		si5351.set_phase(SI5351_CLK0, 0);
 		si5351.set_phase(SI5351_CLK1, si_plls[pll].n);
 	}
-	si5351.pll_reset(si_plls[pll].pll);
+	if (si_plls[pll].n != si_plls[pll].last_n)
+		si5351.pll_reset(si_plls[pll].pll);
 }
 
 void si5351_status() {
