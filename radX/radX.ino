@@ -62,6 +62,7 @@ si_clock_t si_clocks[SI_CLOCKS] = {
 si5351_clock current_clk = SI5351_CLK0;
 uint8_t freq_digit = 0;		// what digit is being manipulated by the tuning encoder
 bool freq_hold = false;		// is the tuning encoder locked out of frequency changes
+bool freq_hold_last = false;	// for remembering the freq_hold state as you cycle through clk1
 
 typedef struct encoder {
 	Adafruit_MCP23017 *mcpX;	// which mcp chip is this encoder on
@@ -117,9 +118,11 @@ bool encoder_freq_sw_callback(struct encoder *encoder) {
 		switch (current_clk) {
 			case SI5351_CLK0:
 				current_clk = SI5351_CLK1;
+				freq_hold_last = freq_hold;
 				freq_hold = true;
 				break;
 			case SI5351_CLK1:
+				freq_hold = freq_hold_last;
 				current_clk = SI5351_CLK2;
 				break;
 			case SI5351_CLK2:
