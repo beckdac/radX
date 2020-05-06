@@ -4,6 +4,11 @@
 #include <si5351.h>
 #include <Wire.h>
 
+// if enabled clk1 is disabled for tuning and will
+// output quadrature of clk0
+#define QUAD_CLK1
+#undef QUAD_CLK1
+
 #undef DEBUG
 #define DEBUG
 
@@ -64,7 +69,9 @@ si_clock_t si_clocks[SI_CLOCKS] = {
 si5351_clock current_clk = SI5351_CLK0;
 uint8_t freq_digit = 0;		// what digit is being manipulated by the tuning encoder
 bool freq_hold = false;		// is the tuning encoder locked out of frequency changes
+#ifdef QUAD_CLK1
 bool freq_hold_last = false;	// for remembering the freq_hold state as you cycle through clk1
+#endif
 
 typedef struct encoder {
 	Adafruit_MCP23017 *mcpX;	// which mcp chip is this encoder on
@@ -120,11 +127,15 @@ bool encoder_freq_sw_callback(struct encoder *encoder) {
 		switch (current_clk) {
 			case SI5351_CLK0:
 				current_clk = SI5351_CLK1;
+#ifdef QUAD_CLK1
 				freq_hold_last = freq_hold;
 				freq_hold = true;
+#endif
 				break;
 			case SI5351_CLK1:
+#ifdef QUAD_CLK1
 				freq_hold = freq_hold_last;
+#endif
 				current_clk = SI5351_CLK2;
 				break;
 			case SI5351_CLK2:
@@ -143,11 +154,15 @@ bool encoder_freq_sw_callback(struct encoder *encoder) {
 
 bool encoder_select_sw_callback(struct encoder *encoder) {
 	if (encoder->sw) {
+#ifdef QUAD_CLK1
 		// clock 1 is quad locked to clock 0
 		if (current_clk != SI5351_CLK1) {
 			freq_hold = !freq_hold;
 			oled_update_display();
 		}
+#else
+		oled_update_display();
+#endif
 #ifdef DEBUG
 		Serial.print("freq_hold = ");
 		Serial.println(freq_hold, DEC);
@@ -457,6 +472,7 @@ void switches_process(void) {
 	}
 }
 
+#ifdef QUAD_CLK1
 void si5351_pll_freq_calculate(uint8_t pll) {
 	double pll_freq_dbl;
 
@@ -474,6 +490,7 @@ void si5351_pll_freq_calculate(uint8_t pll) {
 		}
 	} 
 }
+#endif
 
 void si5351_init() {
 	bool i2c_found;
@@ -497,9 +514,14 @@ void si5351_init() {
 void si5351_set_freq(uint8_t clock, uint64_t freq) {
 	uint8_t pll;
 	// don't change the frequency if the clock is on hold
+#ifdef QUAD_CLK1
 	// or this is clock 1 which is locked as quad of clk0
 	if (freq_hold || si_clocks[clock].clock == SI5351_CLK1)
+#else
+	if (freq_hold)
+#endif
 		return;
+#ifdef QUAD_CLK1
 	for (pll = 0; pll < SI_PLLS; ++pll) {
 		if (si_plls[pll].pll == si_clocks[clock].pll)
 			break;
@@ -524,6 +546,10 @@ void si5351_set_freq(uint8_t clock, uint64_t freq) {
 	}
 	if (si_plls[pll].n != si_plls[pll].last_n)
 		si5351.pll_reset(si_plls[pll].pll);
+#else
+	si_clocks[clock].freq = freq;
+	si5351.set_freq(si_clocks[clock].freq, si_clocks[clock].clock);
+#endif
 }
 
 void si5351_status() {
