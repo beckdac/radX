@@ -27,7 +27,7 @@ Adafruit_MCP23017 mcp0; //, mcp1;
 volatile bool mcp0_interrupt = false;
 void mcp0_interrupt_callback(void) {
 	mcp0_interrupt = true;
-	Serial.println("interrupt");
+//	Serial.println("interrupt");
 }
 
 // si3531
