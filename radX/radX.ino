@@ -27,7 +27,7 @@ Adafruit_MCP23017 mcp0; //, mcp1;
 volatile bool mcp0_interrupt = false;
 void mcp0_interrupt_callback(void) {
 	mcp0_interrupt = true;
-//	Serial.println("interrupt");
+//	Serial.println("# interrupt");
 }
 
 // si3531
@@ -95,7 +95,7 @@ bool encoder_freq_callback(struct encoder *encoder, int8_t dir) {
 		si_clocks[current_clk].freq -= delta;
 	}
 #ifdef DEBUG
-	Serial.print("delta ");
+	Serial.print("# delta ");
 	Serial.print((uint32_t) delta, DEC);
 	Serial.print("clock ");
 	Serial.print(current_clk, DEC);
@@ -116,7 +116,7 @@ bool encoder_select_callback(struct encoder *encoder, int8_t dir) {
 			freq_digit--;
 	}
 #ifdef DEBUG
-	Serial.print("freq_digit: ");
+	Serial.print("# freq_digit: ");
 	Serial.println(freq_digit, DEC);
 #endif
 	oled_update_display();
@@ -145,7 +145,7 @@ bool encoder_freq_sw_callback(struct encoder *encoder) {
 				current_clk = SI5351_CLK0;
 		};
 #ifdef DEBUG
-		Serial.print("current clock changed to ");
+		Serial.print("# current clock changed to ");
 		Serial.println(current_clk, DEC);
 #endif
 		oled_update_display();
@@ -164,7 +164,7 @@ bool encoder_select_sw_callback(struct encoder *encoder) {
 		oled_update_display();
 #endif
 #ifdef DEBUG
-		Serial.print("freq_hold = ");
+		Serial.print("# freq_hold = ");
 		Serial.println(freq_hold, DEC);
 #endif
 	}
@@ -213,13 +213,100 @@ switch_t switches[SWITCHES] = {
 */
 };
 
+// Command line interface
+const char MSG_OK[] = "OK\r\n";
+const char MSG_ERROR[] = "ERROR";
+const char MSG_LF[] = "\r\n";
+const char MSG_CSEP[] = ": ";
+const char MSG_INVCMD[] = "invalid command";
+const char MSG_TOOLONG[] = "command line too long";
+const char MSG_UNKPC[] = "unhandled exception in process_command";
+const char MSG_READY[] = "READY\r\n";
+const char MSG_INV_FREQ[] = "invalid frequency";
+const char MSG_INV_CLOCK[] = "invalid clock";
+const char MSG_NO_SI5351[] = "si5351 not found on I2C bus";
+const char MSG_SI5351_INT_ERROR[] = "reached prohibited state in si5351_set_freq";
+
+#define SEND_ERROR(msg)	Serial.print(MSG_ERROR); Serial.print(MSG_CSEP); Serial.print(msg); Serial.print(MSG_LF);
+#define SEND_ERROR_DEC(msg, num)	Serial.print(MSG_ERROR); Serial.print(MSG_CSEP); Serial.print(msg); Serial.print(MSG_CSEP); Serial.print(num, DEC); Serial.print(MSG_LF);
+#define SEND_ERROR_CHAR(msg, ch)	Serial.print(MSG_ERROR); Serial.print(MSG_CSEP); Serial.print(msg); Serial.print(MSG_CSEP); Serial.write(ch); Serial.print(MSG_LF);
+#define SEND_ERROR_CHAR_DEC(msg, ch, num)	Serial.print(MSG_ERROR); Serial.print(MSG_CSEP); Serial.print(msg); Serial.print(MSG_CSEP); Serial.write(ch); Serial.print(MSG_CSEP); Serial.print(num, DEC); Serial.print(MSG_LF);
+
+bool cmd_reset(char *cmd) {
+	NVIC_SystemReset();      // processor software reset
+}
+
+bool cmd_clock(char *cmd) {
+	char *endptr = cmd, *token;
+	uint8_t clock;
+	uint64_t new_freq;
+#ifdef DEBUG
+	Serial.print("# changing clock on serial command: ");
+	Serial.println(cmd);
+#endif
+	token = strtok_r(endptr, " ", &endptr);
+	if (token) {
+		clock = atoi(token);
+		if (clock < 0 || clock >= SI_CLOCKS) {
+			SEND_ERROR(MSG_INV_CLOCK);
+			return false;
+		}
+		token = strtok_r(endptr, " ", &endptr);
+		if (token) {
+			new_freq = atoi(token);
+			if (new_freq < 0) {
+				SEND_ERROR(MSG_INV_FREQ);
+				return false;
+			}
+			si_clocks[clock].freq = (uint64_t)SI5351_FREQ_MULT * new_freq;
+			si5351_set_freq(si_clocks[clock].clock, si_clocks[clock].freq);
+			oled_update_display();
+			return true;
+		}
+	}
+	return false;
+}
+
+struct cmd_table_str {
+	char *name;
+	bool (*func)(char *);
+} cmd_table[] = {
+	{ "clk", &cmd_clock },
+	{ "rst", &cmd_reset },
+};
+const uint8_t cmd_table_entries = 2;
+
+bool process_command(char *cmd) {
+	char *endptr = cmd, *token;
+	uint8_t i, len = strlen(cmd);
+	String msg;
+
+	if (len == 0) return false;
+
+	// process first word in command, handled commands return true
+	token = strtok_r(endptr, " ", &endptr);
+	if (token) {
+		for (i = 0; i < cmd_table_entries; ++i) {
+			if (strcmp(token, cmd_table[i].name) == 0) {
+				return cmd_table[i].func(endptr);
+			}
+		}
+	}
+	
+	// no command handler found
+	SEND_ERROR(MSG_INVCMD);
+	Serial.print('#'); Serial.print(cmd); Serial.print(MSG_LF);
+	return false;
+}
+
+//////////////////////////////////////////////////////
 
 void setup() {
-#ifdef DEBUG
-	delay(1000);
+//#ifdef DEBUG
+	delay(3000);
 	Serial.begin(115200);
-	Serial.println("setup...");
-#endif
+	Serial.print("# setup...");
+//#endif
 
 	i2c_init();
 	// setup the OLED i2c display
@@ -244,16 +331,23 @@ void setup() {
 	for (int i = 0; i < SWITCHES; ++i) {
 		switches[i].mcpX->setupInterruptPin(switches[i].pin, CHANGE);
 	}
+	attachInterrupt(MCP0_INTERRUPT_PIN, &mcp0_interrupt_callback, FALLING);
 
 	// si5351
 	si5351_init();
 
-#ifdef DEBUG
-	Serial.println("...done");
-#endif
 	oled_update_display();
+//#ifdef DEBUG
+	Serial.println("... done");
+//#endif
+	Serial.println(MSG_READY);
 }
 
+#define MAX_CMD_LEN 64
+char c, cmd_buf[MAX_CMD_LEN + 1];
+#define CMD_COMMENT_CHAR '#'
+bool suspend_store = false;
+uint8_t c_idx;
 uint8_t gpioAB[2];
 boolean A, B, sw;
 unsigned int value;
@@ -261,22 +355,56 @@ int i;
 
 void loop() {
 #ifdef DEBUG
-	Serial.print("loop\n\r");
+	//Serial.print("loop\n\r");
 #endif
-	attachInterrupt(MCP0_INTERRUPT_PIN, &mcp0_interrupt_callback, FALLING);
 
-	while (!mcp0_interrupt);
+	// read to newline
+	// ignore any line that has over MAX_CMD_LEN characters
+	if (Serial.available() > 0) {
+		c = Serial.read();
+		if (c == '\n' || c == '\r') {
+			if (suspend_store == false) {
+				cmd_buf[c_idx] = '\0';
 #ifdef DEBUG
-	Serial.print("interrupt\n\r");
+				Serial.print(MSG_LF);
 #endif
-
-	detachInterrupt(MCP0_INTERRUPT_PIN);
+				process_command(cmd_buf);
+			} else {
+				suspend_store = false;
+			}
+			c_idx = 0;
+		} else {
+			if (c_idx < MAX_CMD_LEN) {
+				// if the first character is not printable or CMD_COMMENT_CHAR
+				// then suspend_store and ignore the line
+				if (c_idx == 0 && (!isprint(c) || c == CMD_COMMENT_CHAR)) {
+					suspend_store = true;
+				}
+				// if suspend_store is false, then update the command buffer
+				if (!suspend_store) {
+#ifdef DEBUG
+					//Serial.print(c);
+#endif
+					cmd_buf[c_idx] = c;
+					++c_idx;
+				}
+			} else {
+				SEND_ERROR(MSG_TOOLONG);
+				suspend_store = true;
+			}
+		}
+	}
 
 	if (mcp0_interrupt) {
+#ifdef DEBUG
+		Serial.print("interrupt\n\r");
+#endif
+		detachInterrupt(MCP0_INTERRUPT_PIN);
 		gpioAB[0] = mcp0.readGPIOAB();
 		encoders_process();
 		switches_process();
 		mcp0_interrupt = false;
+		attachInterrupt(MCP0_INTERRUPT_PIN, &mcp0_interrupt_callback, FALLING);
 	}
 }
 
@@ -287,7 +415,7 @@ void i2c_init(void) {
 	Wire.begin();
 	Wire.setClock(I2C_FREQ);
 #ifdef DEBUG
-	Serial.println("i2c");
+	Serial.print("i2c ");
 #endif
 }
 
@@ -304,7 +432,7 @@ void oled_init(void) {
 	oled->println("Welcome!");
 	oled->display();
 #ifdef DEBUG
-	Serial.println("oled");
+	Serial.print("oled ");
 #endif
 }
 
@@ -364,7 +492,7 @@ void encoders_init(void) {
 		encoders[i].sw = encoders[i].mcpX->digitalRead(encoders[i].pinSW);
 	}
 #ifdef DEBUG
-	Serial.println("encoders");
+	Serial.print("encoders ");
 #endif
 }
 
@@ -385,7 +513,7 @@ void encoders_process(void) {
 		if (sw != encoders[i].sw) {
 			encoders[i].sw = sw;
 #ifdef DEBUG
-			Serial.print("encoder ");
+			Serial.print("# encoder ");
 			Serial.print(i, DEC);
 			Serial.print(" switch state change: ");
 			Serial.println(sw, DEC);
@@ -403,7 +531,7 @@ void encoders_process(void) {
 					encoders[i].encoder_callback(&encoders[i], +1);
 
 #ifdef DEBUG
-				Serial.print("encoder ");
+				Serial.print("# encoder ");
 				Serial.print(i, DEC);
 				Serial.print(" value change (+1): ");
 				Serial.println(encoders[i].value, DEC);
@@ -419,7 +547,7 @@ void encoders_process(void) {
 					encoders[i].value = encoders[i].min_value;
 					encoders[i].encoder_callback(&encoders[i], -1);
 #ifdef DEBUG
-				Serial.print("encoder ");
+				Serial.print("# encoder ");
 				Serial.print(i, DEC);
 				Serial.print(" value change (-1): ");
 				Serial.println(encoders[i].value, DEC);
@@ -445,7 +573,7 @@ void switches_init(void) {
 		}
 	}
 #ifdef DEBUG
-	Serial.println("switches");
+	Serial.print("switches ");
 #endif
 }
 
@@ -463,7 +591,7 @@ void switches_process(void) {
 		if (sw != switches[i].sw) {
 			switches[i].sw = sw;
 #ifdef DEBUG
-			Serial.print("switch ");
+			Serial.print("# switch ");
 			Serial.print(i, DEC);
 			Serial.print(" state change: ");
 			Serial.println(sw, DEC);
@@ -498,7 +626,7 @@ void si5351_init() {
 	i2c_found = si5351.init(SI5351_CRYSTAL_LOAD_8PF, 0, 0);
 	if(!i2c_found) {
 #ifdef DEBUG
-		Serial.println("si5351 not found on I2C bus!");
+		SEND_ERROR(MSG_NO_SI5351);
 		return;
 #endif
 	}
@@ -507,7 +635,7 @@ void si5351_init() {
 		si5351_set_freq(i, si_clocks[i].freq);
 	}
 #ifdef DEBUG
-	Serial.println("si5351");
+	Serial.print("si5351 ");
 #endif
 }	
 
@@ -528,7 +656,7 @@ void si5351_set_freq(uint8_t clock, uint64_t freq) {
 	}
 #ifdef DEBUG
 	if (pll == SI_PLLS) {	// this shouldn't happen
-		Serial.println("reached prohibited state in si5351_set_freq");
+		SEND_ERROR(MSG_SI5351_INT_ERROR);
 		return;
 	}
 #endif
@@ -554,7 +682,7 @@ void si5351_set_freq(uint8_t clock, uint64_t freq) {
 
 void si5351_status() {
 	si5351.update_status();
-	Serial.print("SYS_INIT: ");
+	Serial.print("# SYS_INIT: ");
 	Serial.print(si5351.dev_status.SYS_INIT);
 	Serial.print("  LOL_A: ");
 	Serial.print(si5351.dev_status.LOL_A);
@@ -565,3 +693,10 @@ void si5351_status() {
 	Serial.print("  REVID: ");
 	Serial.println(si5351.dev_status.REVID);
 }
+
+
+/******************************************************************************
+ * Serial command interpreter
+ *****************************************************************************/
+// # in either direction is info to be ignored
+
